@@ -1,0 +1,119 @@
+{
+  "alias": "smart",
+  "apps": {
+    "chrome": {
+      "linux": ["google-chrome"],
+      "mac": ["open", "-a", "Google Chrome"],
+      "windows": ["cmd", "/c", "start", "chrome"]
+    },
+    "firefox": {
+      "linux": ["firefox"],
+      "mac": ["open", "-a", "Firefox"],
+      "windows": ["cmd", "/c", "start", "firefox"]
+    },
+    "edge": {
+      "linux": ["microsoft-edge"],
+      "mac": ["open", "-a", "Microsoft Edge"],
+      "windows": ["cmd", "/c", "start", "msedge"]
+    },
+    "brave": {
+      "linux": ["brave-browser"],
+      "mac": ["open", "-a", "Brave Browser"],
+      "windows": ["cmd", "/c", "start", "brave"]
+    },
+    "vscode": {
+      "linux": ["code"],
+      "mac": ["code"],
+      "windows": ["code"]
+    },
+    "terminal": {
+      "linux": ["x-terminal-emulator"],
+      "mac": ["open", "-a", "Terminal"],
+      "windows": ["cmd", "/c", "start", "cmd"]
+    },
+    "notepad": {
+      "linux": ["gedit"],
+      "mac": ["open", "-a", "TextEdit"],
+      "windows": ["notepad"]
+    },
+    "calculator": {
+      "linux": ["gnome-calculator"],
+      "mac": ["open", "-a", "Calculator"],
+      "windows": ["calc"]
+    },
+    "files": {
+      "linux": ["nautilus"],
+      "mac": ["open", "."],
+      "windows": ["explorer", "."]
+    },
+    "spotify": {
+      "linux": ["spotify"],
+      "mac": ["open", "-a", "Spotify"],
+      "windows": ["cmd", "/c", "start", "spotify"]
+    }
+  },
+  "private_flags": {
+    "chrome": {
+      "linux": "--incognito",
+      "mac": "--incognito",
+      "windows": "--incognito"
+    },
+    "firefox": {
+      "linux": "--private-window",
+      "mac": "--private-window",
+      "windows": "--private-window"
+    },
+    "edge": {
+      "linux": "--inprivate",
+      "mac": "--inprivate",
+      "windows": "--inprivate"
+    },
+    "brave": {
+      "linux": "--incognito",
+      "mac": "--incognito",
+      "windows": "--incognito"
+    }
+  },
+  "list_commands": {
+    "processes": {
+      "linux": ["ps", "aux"],
+      "mac": ["ps", "aux"],
+      "windows": ["tasklist"]
+    },
+    "files": {
+      "linux": ["ls", "-la"],
+      "mac": ["ls", "-la"],
+      "windows": ["cmd", "/c", "dir"]
+    },
+    "network": {
+      "linux": ["ss", "-tuln"],
+      "mac": ["netstat", "-tuln"],
+      "windows": ["netstat", "-an"]
+    },
+    "disks": {
+      "linux": ["df", "-h"],
+      "mac": ["df", "-h"],
+      "windows": ["wmic", "logicaldisk", "get", "size,freespace,caption"]
+    },
+    "users": {
+      "linux": ["who"],
+      "mac": ["who"],
+      "windows": ["query", "user"]
+    },
+    "ports": {
+      "linux": ["ss", "-tlnp"],
+      "mac": ["lsof", "-iTCP", "-sTCP:LISTEN"],
+      "windows": ["netstat", "-ano"]
+    },
+    "memory": {
+      "linux": ["free", "-h"],
+      "mac": ["vm_stat"],
+      "windows": ["wmic", "OS", "get", "FreePhysicalMemory,TotalVisibleMemorySize"]
+    },
+    "cpu": {
+      "linux": ["top", "-bn1"],
+      "mac": ["top", "-l", "1"],
+      "windows": ["wmic", "cpu", "get", "loadpercentage"]
+    }
+  }
+}
