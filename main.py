@@ -654,17 +654,22 @@ def handle_shell(args, config, os_name):
         "guide": handle_guide,
         "ask":   handle_ask,
     }
+    spider_cmds = list(handlers.keys()) + ["exit"]
 
     banner(alias)
 
-    print(f"  {bold(cyan('Interactive Mode'))}  "
-          f"{dim('— type a command, or')} {bold(red('exit'))} {dim('to quit.')}")
-    print(f"  {dim('Tip: prefix with')} {cyan(':')}"
-          f" {dim('to ask AI  e.g.')} {cyan(': open chrome in private')}\n")
-
-    prompt = f"  {bold(cyan(alias))} {bold(cyan(ARROW))} "
+    print(f"  {bold(cyan('Interactive Mode'))}")
+    print(f"  {dim('Spider:')}  {cyan('  '.join(spider_cmds))}")
+    print(f"  {dim('System:')}  {dim('any real command — ls, cd, git, ping, docker, ps ...')}")
+    print(f"  {dim('AI:')}      {cyan(':')} {dim('prefix — e.g.')} {cyan(': how do I zip a folder')}\n")
 
     while True:
+        # rebuild prompt each loop so cd updates it
+        cwd      = os.getcwd()
+        home_dir = os.path.expanduser("~")
+        disp_cwd = ("~" + cwd[len(home_dir):]) if cwd.startswith(home_dir) else cwd
+        prompt   = f"  {bold(cyan(alias))} {dim(disp_cwd)} {bold(cyan(ARROW))} "
+
         try:
             raw = input(prompt).strip()
         except (KeyboardInterrupt, EOFError):
@@ -677,6 +682,7 @@ def handle_shell(args, config, os_name):
             print(f"\n  {green(CHECK)}  {dim('Goodbye!')}\n")
             break
 
+        # AI shortcut
         if raw.startswith(":"):
             try:
                 handle_ask(raw[1:].strip().split(), config, os_name)
@@ -688,23 +694,36 @@ def handle_shell(args, config, os_name):
         command = parts[0].lower()
         rest    = parts[1:]
 
+        # Spider own commands — exact match only
         if command in handlers:
             try:
                 handlers[command](rest, config, os_name)
             except SystemExit:
                 pass
-        else:
-            suggestion = fuzzy_match(command, list(handlers.keys()))
-            if suggestion:
-                print(yellow(f"\n  {BULLET} '{command}' → did you mean '{bold(suggestion)}'? Running that..."))
-                try:
-                    handlers[suggestion](rest, config, os_name)
-                except SystemExit:
-                    pass
-            else:
-                avail = list(handlers.keys()) + ["exit"]
-                print(error(f"\n  {CROSS} Unknown: '{command}'"))
-                print(dim(f"  Try: {', '.join(avail)}\n"))
+            continue
+
+        # cd is a shell built-in — subprocess can't change the process directory
+        if command == "cd":
+            target = os.path.expanduser(" ".join(rest)) if rest else os.path.expanduser("~")
+            try:
+                os.chdir(target)
+            except FileNotFoundError:
+                print(error(f"  {CROSS} cd: no such directory: {target}\n"))
+            except PermissionError:
+                print(error(f"  {CROSS} cd: permission denied: {target}\n"))
+            except Exception as exc:
+                print(error(f"  {CROSS} cd: {exc}\n"))
+            continue
+
+        # Everything else → real system command
+        print()
+        try:
+            result = subprocess.run(raw, shell=True)
+            if result.returncode != 0:
+                print(dim(f"  (exit {result.returncode})"))
+        except Exception as exc:
+            print(error(f"  {CROSS} {exc}"))
+        print()
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
