@@ -194,47 +194,84 @@ def create_mac(alias):
 
 # ── Windows ───────────────────────────────────────────────────────────────────
 
+def find_python_windows():
+    """Return the best available Python executable path on Windows."""
+    # sys.executable is always the interpreter that is running this script
+    if sys.executable and os.path.exists(sys.executable):
+        return sys.executable
+    for candidate in ("python", "python3", "py"):
+        try:
+            r = subprocess.run([candidate, "--version"], capture_output=True, timeout=5)
+            if r.returncode == 0:
+                # resolve to full path
+                r2 = subprocess.run(
+                    ["where", candidate], capture_output=True, timeout=5, text=True
+                )
+                first_line = r2.stdout.strip().splitlines()[0] if r2.stdout.strip() else ""
+                return first_line if first_line else candidate
+        except Exception:
+            continue
+    return "python"   # last resort
+
+
 def create_windows(alias):
     name      = f"{alias.capitalize()} CMD Helper"
     desk_dir  = os.path.join(os.path.expanduser("~"), "Desktop")
     os.makedirs(desk_dir, exist_ok=True)
 
+    # Use the exact Python that is running this script — avoids PATH issues
+    python_exe = find_python_windows()
+    # Windows paths need backslashes inside the .lnk / .bat
+    main_win   = MAIN_PATH.replace("/", "\\")
+    script_win = SCRIPT_DIR.replace("/", "\\")
+    python_win = python_exe.replace("/", "\\")
+
     lnk_path = os.path.join(desk_dir, f"{name}.lnk")
 
-    # PowerShell creates a proper Windows shortcut (.lnk) with a terminal icon
-    ps_cmd = (
-        f"$s=(New-Object -COM WScript.Shell).CreateShortcut('{lnk_path}');"
-        f"$s.TargetPath='python';"
-        f"$s.Arguments='\"{MAIN_PATH}\" shell';"
-        f"$s.WorkingDirectory='{SCRIPT_DIR}';"
-        f"$s.IconLocation='shell32.dll,21';"
-        f"$s.Description='{name}';"
-        f"$s.Save()"
-    )
-
+    # PowerShell here-string avoids quote-escaping nightmares
+    ps_script = f"""
+$s = (New-Object -COM WScript.Shell).CreateShortcut('{lnk_path}')
+$s.TargetPath      = '{python_win}'
+$s.Arguments       = '"{main_win}" shell'
+$s.WorkingDirectory= '{script_win}'
+$s.IconLocation    = 'shell32.dll,21'
+$s.Description     = '{name}'
+$s.Save()
+"""
+    lnk_ok = False
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
             capture_output=True, timeout=15,
         )
         if result.returncode == 0:
             tick(f"Shortcut  →  {lnk_path}")
-            return
-        warn(f"PowerShell shortcut failed (code {result.returncode}), falling back to .bat")
+            lnk_ok = True
+        else:
+            warn(f"PowerShell failed (code {result.returncode}): {result.stderr.decode().strip()}")
     except FileNotFoundError:
-        warn("PowerShell not found, falling back to .bat")
+        warn("PowerShell not found.")
     except Exception as exc:
-        warn(f"PowerShell error: {exc}, falling back to .bat")
+        warn(f"PowerShell error: {exc}")
 
-    # Fallback: plain .bat file
+    # Always write a .bat as well — reliable fallback, also useful for debugging
     bat_path = os.path.join(desk_dir, f"{name}.bat")
-    write_file(bat_path, (
+    bat_content = (
         "@echo off\n"
-        f'python "{MAIN_PATH}" shell\n'
-        "pause\n"
-    ))
-    tick(f"Batch     →  {bat_path}")
-    info("Double-click the .bat to launch. The window stays open until you type 'exit'.")
+        f"title {name}\n"
+        f'"{python_win}" "{main_win}" shell\n'
+        "if %errorlevel% neq 0 (\n"
+        "    echo.\n"
+        "    echo Something went wrong. Check that Python is installed.\n"
+        "    pause\n"
+        ")\n"
+    )
+    write_file(bat_path, bat_content)
+    if lnk_ok:
+        tick(f"Fallback  →  {bat_path}  (.bat if the shortcut doesn't work)")
+    else:
+        tick(f"Batch     →  {bat_path}")
+        info("Double-click the .bat file to launch.")
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
