@@ -46,6 +46,17 @@ python3 "{MAIN_PATH}" "$@"
 
     print(f"Installed '{alias}' → {script_path}")
 
+    # create "alias:" shortcut — typing "spider: ..." routes straight to AI
+    ai_script_path = os.path.join(local_bin, alias + ":")
+    ai_content = f"""#!/usr/bin/env bash
+python3 "{MAIN_PATH}" "ask" "$@"
+"""
+    with open(ai_script_path, "w") as f:
+        f.write(ai_content)
+    st2 = os.stat(ai_script_path)
+    os.chmod(ai_script_path, st2.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    print(f"Installed '{alias}:' → {ai_script_path}  (AI shortcut)")
+
     path_env = os.environ.get("PATH", "")
     if local_bin not in path_env:
         shell = os.environ.get("SHELL", "bash")
@@ -84,6 +95,60 @@ def setup_windows(alias):
         print(f"\nDone! Try it now:\n  {alias} --help")
 
 
+def create_desktop_shortcut_linux(alias):
+    desktop_entry = f"""[Desktop Entry]
+Version=1.0
+Type=Application
+Name={alias.capitalize()} CMD Helper
+GenericName=CMD Helper
+Comment=Smart command-line helper — double-click to open
+Exec=python3 "{MAIN_PATH}" shell
+Icon=utilities-terminal
+Terminal=true
+StartupNotify=false
+Categories=Utility;System;
+"""
+    # install to applications menu
+    apps_dir = os.path.expanduser("~/.local/share/applications")
+    os.makedirs(apps_dir, exist_ok=True)
+    app_file = os.path.join(apps_dir, f"{alias}.desktop")
+    with open(app_file, "w") as f:
+        f.write(desktop_entry)
+    os.chmod(app_file, 0o755)
+    print(f"  App menu entry  → {app_file}")
+
+    # also drop one on the Desktop if it exists
+    desktop_dir = os.path.expanduser("~/Desktop")
+    if os.path.isdir(desktop_dir):
+        desk_file = os.path.join(desktop_dir, f"{alias}.desktop")
+        with open(desk_file, "w") as f:
+            f.write(desktop_entry)
+        os.chmod(desk_file, 0o755)
+        print(f"  Desktop icon    → {desk_file}")
+        print(f"  (Right-click it and choose 'Allow Launching' if needed)")
+
+
+def create_desktop_shortcut_mac(alias):
+    desktop_dir = os.path.expanduser("~/Desktop")
+    os.makedirs(desktop_dir, exist_ok=True)
+    command_file = os.path.join(desktop_dir, f"{alias.capitalize()}.command")
+    with open(command_file, "w") as f:
+        f.write(f'#!/usr/bin/env bash\npython3 "{MAIN_PATH}" shell\n')
+    os.chmod(command_file, 0o755)
+    print(f"  Desktop launcher → {command_file}")
+    print(f"  Double-click it to open. (First run: right-click → Open to bypass Gatekeeper)")
+
+
+def create_desktop_shortcut_windows(alias):
+    desktop_dir = os.path.join(os.path.expanduser("~"), "Desktop")
+    os.makedirs(desktop_dir, exist_ok=True)
+    bat_file = os.path.join(desktop_dir, f"{alias.capitalize()}.bat")
+    with open(bat_file, "w") as f:
+        f.write(f'@echo off\npython "{MAIN_PATH}" shell\npause\n')
+    print(f"  Desktop launcher → {bat_file}")
+    print(f"  Double-click it to open.")
+
+
 def main():
     alias = load_alias()
     system = platform.system().lower()
@@ -97,6 +162,14 @@ def main():
     else:
         print(f"Unsupported OS: {system}")
         sys.exit(1)
+
+    print(f"\nCreating desktop shortcut...")
+    if system == "linux":
+        create_desktop_shortcut_linux(alias)
+    elif system == "darwin":
+        create_desktop_shortcut_mac(alias)
+    elif system == "windows":
+        create_desktop_shortcut_windows(alias)
 
 
 if __name__ == "__main__":
