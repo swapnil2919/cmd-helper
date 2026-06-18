@@ -7,113 +7,191 @@ import subprocess
 import urllib.request
 import urllib.error
 import difflib
+import threading
+import time
+import itertools
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 
+# ── OS ────────────────────────────────────────────────────────────────────────
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
-        print(error("config.json not found next to main.py"))
+        print("\033[91mconfig.json not found next to main.py\033[0m")
         sys.exit(1)
     with open(CONFIG_PATH, "r") as f:
         return json.load(f)
 
-
 def get_os():
-    system = platform.system().lower()
-    if system == "darwin":
-        return "mac"
-    elif system == "windows":
-        return "windows"
+    s = platform.system().lower()
+    if s == "darwin":  return "mac"
+    if s == "windows": return "windows"
     return "linux"
 
+IS_WIN = platform.system() == "Windows"
 
-# ---- Colors (ANSI, skipped on older Windows) ----
+# ── Colors ────────────────────────────────────────────────────────────────────
 
-USE_COLOR = platform.system() != "Windows" or os.environ.get("TERM") == "xterm"
+USE_COLOR = not IS_WIN or os.environ.get("TERM") == "xterm"
 
-def _c(text, code):
-    return f"\033[{code}m{text}\033[0m" if USE_COLOR else text
+def _c(t, code): return f"\033[{code}m{t}\033[0m" if USE_COLOR else t
 
 def bold(t):    return _c(t, "1")
+def dim(t):     return _c(t, "2")
 def cyan(t):    return _c(t, "96")
 def green(t):   return _c(t, "92")
 def yellow(t):  return _c(t, "93")
-def error(t):   return _c(t, "91")
+def red(t):     return _c(t, "91")
+def magenta(t): return _c(t, "95")
+def blue(t):    return _c(t, "94")
+def white(t):   return _c(t, "97")
+def error(t):   return red(t)
 
+# ── Glyphs (ASCII fallback on old Windows terminals) ──────────────────────────
 
-# ---- Fuzzy match ----
+ARROW  = "❯" if not IS_WIN else ">"
+BULLET = "▸" if not IS_WIN else "*"
+CHECK  = "✔" if not IS_WIN else "+"
+CROSS  = "✘" if not IS_WIN else "x"
+DOT    = "·" if not IS_WIN else "."
+
+# ── Banner ────────────────────────────────────────────────────────────────────
+
+def banner(alias):
+    spaced  = (" " + DOT + " ").join(alias.upper())
+    sub     = "C M D   H E L P E R"
+    width   = max(len(spaced), len(sub)) + 8
+    s_pad   = " " * ((width - len(spaced)) // 2)
+    b_pad   = " " * ((width - len(sub))   // 2)
+    s_trail = " " * (width - len(spaced) - len(s_pad))
+    b_trail = " " * (width - len(sub)    - len(b_pad))
+
+    print()
+    print(bold(cyan("  ╔" + "═" * width + "╗")))
+    print(bold(cyan("  ║")) + " " * width               + bold(cyan("║")))
+    print(bold(cyan("  ║")) + s_pad + bold(cyan(spaced)) + s_trail + bold(cyan("║")))
+    print(bold(cyan("  ║")) + b_pad + yellow(sub)        + b_trail + bold(cyan("║")))
+    print(bold(cyan("  ║")) + " " * width               + bold(cyan("║")))
+    print(bold(cyan("  ╚" + "═" * width + "╝")))
+    print()
+
+# ── Section header ─────────────────────────────────────────────────────────────
+
+def section(num, title, color_fn=yellow):
+    label = f"  {num}. {title}  "
+    line  = "─" * max(0, 60 - len(label))
+    print(bold(color_fn(label + line)))
+
+# ── Badges + command rows ──────────────────────────────────────────────────────
+
+_BADGE_COLORS = {
+    "RUN": blue, "LIST": cyan, "KILL": red,
+    "OPEN": green, "FIND": magenta, "AI": yellow, "SHELL": white,
+}
+
+def badge(label):
+    color = _BADGE_COLORS.get(label, white)
+    return bold(color(f"[{label}]"))
+
+def cmd_row(bdg, cmd, desc):
+    b   = badge(bdg)
+    c   = bold(green(cmd))
+    gap = max(1, 46 - len(cmd))
+    return f"  {b}  {c}{' ' * gap}{dim(desc)}"
+
+# ── Spinner ────────────────────────────────────────────────────────────────────
+
+_FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"] if not IS_WIN else ["|","/","-","\\"]
+
+class Spinner:
+    def __init__(self, msg="Working"):
+        self.msg   = msg
+        self._stop = threading.Event()
+        self._t    = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        for f in itertools.cycle(_FRAMES):
+            if self._stop.is_set():
+                break
+            print(f"\r  {bold(cyan(f))}  {dim(self.msg + '...')}", end="", flush=True)
+            time.sleep(0.08)
+        print("\r" + " " * 55 + "\r", end="", flush=True)
+
+    def __enter__(self):
+        self._t.start()
+        return self
+
+    def __exit__(self, *_):
+        self._stop.set()
+        self._t.join()
+
+# ── Fuzzy match ────────────────────────────────────────────────────────────────
 
 def fuzzy_match(query, choices, cutoff=0.55):
-    matches = difflib.get_close_matches(query, choices, n=1, cutoff=cutoff)
-    return matches[0] if matches else None
+    m = difflib.get_close_matches(query, choices, n=1, cutoff=cutoff)
+    return m[0] if m else None
 
-
-# ---- Interactive helpers ----
+# ── Interactive helpers ────────────────────────────────────────────────────────
 
 def pick_from_list(items, prompt="Select an option"):
-    print(cyan(f"\n{prompt}:"))
+    print(f"\n  {bold(cyan(prompt))}")
     for i, item in enumerate(items, 1):
-        print(f"  {yellow(str(i))}. {item}")
+        print(f"    {bold(yellow(str(i)))}  {white(item)}")
     print()
     while True:
         try:
-            raw = input(bold("Enter number: ")).strip()
+            raw = input(f"  {bold(cyan(ARROW))} ").strip()
             idx = int(raw) - 1
             if 0 <= idx < len(items):
                 return items[idx]
-            print(error("Invalid choice, try again."))
+            print(error(f"  {CROSS} Invalid choice, try again."))
         except ValueError:
-            print(error("Please enter a number."))
+            print(error(f"  {CROSS} Please enter a number."))
         except KeyboardInterrupt:
-            print(error("\nCancelled."))
+            print(error("\n  Cancelled."))
             sys.exit(0)
 
 
 def ask_yes_no(prompt):
     while True:
         try:
-            raw = input(bold(f"{prompt} (y/n): ")).strip().lower()
-            if raw in ("y", "yes"):
-                return True
-            if raw in ("n", "no"):
-                return False
-            print(error("Please enter y or n."))
+            raw = input(f"  {bold(prompt)} {dim('(y/n)')} ").strip().lower()
+            if raw in ("y", "yes"): return True
+            if raw in ("n", "no"):  return False
+            print(error(f"  {CROSS} Please enter y or n."))
         except KeyboardInterrupt:
-            print(error("\nCancelled."))
+            print(error("\n  Cancelled."))
             sys.exit(0)
 
-
-# ---- Command runner ----
+# ── Command runners ────────────────────────────────────────────────────────────
 
 def run_detached(cmd):
     try:
-        if platform.system() == "Windows":
-            subprocess.Popen(cmd, shell=True, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+        if IS_WIN:
+            subprocess.Popen(cmd, shell=True,
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
         else:
-            subprocess.Popen(cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(cmd, start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except FileNotFoundError:
-        print(error(f"Command not found: {cmd[0]}"))
+        print(error(f"  {CROSS} Command not found: {cmd[0]}"))
         sys.exit(1)
-
 
 def run_inline(cmd):
     try:
         subprocess.run(cmd)
     except FileNotFoundError:
-        print(error(f"Command not found: {cmd[0]}"))
+        print(error(f"  {CROSS} Command not found: {cmd[0]}"))
         sys.exit(1)
 
-
-# ---- Handlers ----
+# ── Handlers ──────────────────────────────────────────────────────────────────
 
 def handle_run(args, config, os_name):
-    apps = config.get("apps", {})
+    apps          = config.get("apps", {})
     private_flags = config.get("private_flags", {})
-
-    private = False
-    remaining = list(args)
+    private       = False
+    remaining     = list(args)
 
     if remaining and remaining[0].lower() == "private":
         private = True
@@ -124,69 +202,74 @@ def handle_run(args, config, os_name):
     if not app_name:
         choices = list(apps.keys())
         if not choices:
-            print(error("No apps configured in config.json"))
+            print(error(f"  {CROSS} No apps configured in config.json"))
             sys.exit(1)
         app_name = pick_from_list(choices, "Select an app to launch")
 
     if app_name not in apps:
         suggestion = fuzzy_match(app_name, list(apps.keys()))
         if suggestion:
-            print(yellow(f"  '{app_name}' → did you mean '{suggestion}'? Running that..."))
+            print(yellow(f"\n  {BULLET} '{app_name}' → did you mean '{bold(suggestion)}'? Running that..."))
             app_name = suggestion
         else:
-            print(error(f"Unknown app: '{app_name}'"))
-            print(f"Available: {', '.join(apps.keys())}")
+            print(error(f"\n  {CROSS} Unknown app: '{app_name}'"))
+            print(dim(f"  Available: {', '.join(apps.keys())}"))
             sys.exit(1)
 
     if not private and app_name in private_flags:
-        private = ask_yes_no(f"Open {app_name} in private/incognito mode?")
+        private = ask_yes_no(f"Open {bold(white(app_name))} in private/incognito mode?")
 
     cmd = apps[app_name].get(os_name)
     if not cmd:
-        print(error(f"No command configured for '{app_name}' on {os_name}"))
+        print(error(f"  {CROSS} No command configured for '{app_name}' on {os_name}"))
         sys.exit(1)
 
     cmd = list(cmd)
-
     if private and app_name in private_flags:
         flag = private_flags[app_name].get(os_name)
         if flag:
             cmd.append(flag)
 
-    mode = " (private)" if private else ""
-    print(green(f"Launching {app_name}{mode}..."))
+    mode = dim("  (private)") if private else ""
+    print(f"\n  {bold(green(CHECK))}  Launching {bold(white(app_name))}{mode}\n")
     run_detached(cmd)
 
 
 def handle_list(args, config, os_name):
     list_commands = config.get("list_commands", {})
-
-    category = args[0].lower() if args else None
+    category      = args[0].lower() if args else None
 
     if not category:
         choices = list(list_commands.keys())
         if not choices:
-            print(error("No list commands configured in config.json"))
+            print(error(f"  {CROSS} No list commands configured in config.json"))
             sys.exit(1)
         category = pick_from_list(choices, "What do you want to list?")
 
     if category not in list_commands:
         suggestion = fuzzy_match(category, list(list_commands.keys()))
         if suggestion:
-            print(yellow(f"  '{category}' → did you mean '{suggestion}'? Running that..."))
+            print(yellow(f"\n  {BULLET} '{category}' → did you mean '{bold(suggestion)}'? Running that..."))
             category = suggestion
         else:
-            print(error(f"Unknown category: '{category}'"))
-            print(f"Available: {', '.join(list_commands.keys())}")
+            print(error(f"\n  {CROSS} Unknown category: '{category}'"))
+            print(dim(f"  Available: {', '.join(list_commands.keys())}"))
             sys.exit(1)
 
     cmd = list_commands[category].get(os_name)
     if not cmd:
-        print(error(f"No command for '{category}' on {os_name}"))
+        print(error(f"  {CROSS} No command for '{category}' on {os_name}"))
         sys.exit(1)
 
-    print(cyan(f"\n--- {category.upper()} ---\n"))
+    w = 56
+    print()
+    print(bold(cyan("  ┌" + "─" * w + "┐")))
+    label = f"  {category.upper()}"
+    print(bold(cyan("  │")) + bold(white(label)) + " " * (w - len(label)) + bold(cyan("│")))
+    print(bold(cyan("  └" + "─" * w + "┘")))
+    print()
     run_inline(list(cmd))
+    print()
 
 
 def handle_kill(args, config, os_name):
@@ -194,17 +277,17 @@ def handle_kill(args, config, os_name):
 
     if not process_name:
         try:
-            process_name = input(bold("Enter process name to kill: ")).strip()
+            process_name = input(f"\n  {bold(red('Process to kill:'))} ").strip()
         except KeyboardInterrupt:
-            print(error("\nCancelled."))
+            print(error("\n  Cancelled."))
             sys.exit(0)
 
     if not process_name:
-        print(error("No process name provided."))
+        print(error(f"  {CROSS} No process name provided."))
         sys.exit(1)
 
-    if not ask_yes_no(f"Kill '{process_name}'?"):
-        print(yellow("Cancelled."))
+    if not ask_yes_no(f"Kill {bold(red(process_name))}?"):
+        print(dim("\n  Cancelled.\n"))
         return
 
     if os_name == "windows":
@@ -212,7 +295,7 @@ def handle_kill(args, config, os_name):
     else:
         cmd = ["pkill", "-f", process_name]
 
-    print(yellow(f"Killing {process_name}..."))
+    print(f"\n  {bold(red(CROSS))}  Killing {bold(white(process_name))}...\n")
     run_inline(cmd)
 
 
@@ -221,13 +304,13 @@ def handle_open(args, config, os_name):
 
     if not path:
         try:
-            path = input(bold("Enter file or folder path to open: ")).strip()
+            path = input(f"\n  {bold(green('Path to open:'))} ").strip()
         except KeyboardInterrupt:
-            print(error("\nCancelled."))
+            print(error("\n  Cancelled."))
             sys.exit(0)
 
     if not path:
-        print(error("No path provided."))
+        print(error(f"  {CROSS} No path provided."))
         sys.exit(1)
 
     if os_name == "mac":
@@ -237,7 +320,7 @@ def handle_open(args, config, os_name):
     else:
         cmd = ["xdg-open", path]
 
-    print(green(f"Opening {path}..."))
+    print(f"\n  {bold(green(CHECK))}  Opening {bold(white(path))}\n")
     run_detached(cmd)
 
 
@@ -246,167 +329,181 @@ def handle_find(args, config, os_name):
 
     if not query:
         try:
-            query = input(bold("Enter filename or pattern to search: ")).strip()
+            query = input(f"\n  {bold(magenta('Search pattern:'))} ").strip()
         except KeyboardInterrupt:
-            print(error("\nCancelled."))
+            print(error("\n  Cancelled."))
             sys.exit(0)
 
     if not query:
-        print(error("No search query provided."))
+        print(error(f"  {CROSS} No search query provided."))
         sys.exit(1)
 
-    print(cyan(f"\n--- Searching for '{query}' ---\n"))
+    w = 56
+    print()
+    print(bold(magenta("  ┌" + "─" * w + "┐")))
+    label = f"  Searching for: {query}"
+    print(bold(magenta("  │")) + bold(white(label)) + " " * (w - len(label)) + bold(magenta("│")))
+    print(bold(magenta("  └" + "─" * w + "┘")))
+    print()
 
     if os_name == "windows":
         run_inline(["cmd", "/c", "dir", "/s", "/b", f"*{query}*"])
     else:
         run_inline(["find", ".", "-iname", f"*{query}*", "-not", "-path", "*/.git/*"])
+    print()
 
-
-# ---- Help ----
+# ── Help ──────────────────────────────────────────────────────────────────────
 
 def print_help(config):
-    alias = config.get("alias", "smart")
-    apps = list(config.get("apps", {}).keys())
+    alias = config.get("alias", "spider")
+    apps  = list(config.get("apps", {}).keys())
     lists = list(config.get("list_commands", {}).keys())
 
-    print(bold(cyan("\n=== CMD Helper ===")))
-    print(f"\n  {cyan('USAGE:')} {bold(alias)} <command> [options]\n")
+    banner(alias)
 
-    print(yellow("  COMMANDS:"))
-    print(f"    {bold(alias + ' run <app>')}              Launch an app")
-    print(f"    {bold(alias + ' run private <app>')}      Launch in private/incognito mode")
-    print(f"    {bold(alias + ' run')}                    Pick app interactively")
-    print(f"    {bold(alias + ' list <category>')}        Show system info")
-    print(f"    {bold(alias + ' list')}                   Pick category interactively")
-    print(f"    {bold(alias + ' kill <process>')}         Kill a running process")
-    print(f"    {bold(alias + ' open <path>')}            Open a file or folder")
-    print(f"    {bold(alias + ' find <name>')}            Find files by name")
-    print(f"    {bold(alias + ' guide')}                  Show full interactive guide")
-    print(f"    {bold(alias + ' ask <question>')}         Ask AI for command help")
+    print(f"  {dim('Usage:')}  {bold(cyan(alias))} {dim('<command> [options]')}\n")
 
+    rows = [
+        ("RUN",   f"{alias} run <app>",             "Launch an app"),
+        ("RUN",   f"{alias} run private <app>",     "Launch in private/incognito"),
+        ("LIST",  f"{alias} list <category>",       "Show system info"),
+        ("LIST",  f"{alias} list",                  "Pick category interactively"),
+        ("KILL",  f"{alias} kill <process>",        "Kill a running process"),
+        ("OPEN",  f"{alias} open <path>",           "Open a file or folder"),
+        ("FIND",  f"{alias} find <name>",           "Search files by name"),
+        ("AI",    f"{alias} ask <question>",        "Ask AI for command help"),
+        ("AI",    f"{alias}: <question>",           "AI shortcut (no 'ask' needed)"),
+        ("SHELL", f"{alias} guide",                 "Full command guide"),
+        ("SHELL", f"{alias} shell",                 "Interactive mode"),
+    ]
+
+    for bdg, cmd, desc in rows:
+        print(cmd_row(bdg, cmd, desc))
+
+    print()
     if apps:
-        print(yellow("\n  CONFIGURED APPS:"))
-        print(f"    {', '.join(apps)}")
-
+        print(f"  {dim('Apps:')}   {cyan(', '.join(apps))}")
     if lists:
-        print(yellow("\n  LIST CATEGORIES:"))
-        print(f"    {', '.join(lists)}")
+        print(f"  {dim('Lists:')}  {cyan(', '.join(lists))}")
+    print()
 
-    print(f"\n  Edit {cyan('config.json')} to add more apps and commands.\n")
-
-
-# ---- Guide ----
+# ── Guide ─────────────────────────────────────────────────────────────────────
 
 def handle_guide(args, config, os_name):
-    alias = config.get("alias", "smart")
-    apps = config.get("apps", {})
-    lists = config.get("list_commands", {})
-    private_flags = config.get("private_flags", {})
+    sys.path.insert(0, SCRIPT_DIR)
+    import cmd_reference as ref
 
-    divider = cyan("  " + "─" * 56)
+    alias = config.get("alias", "spider")
+    banner(alias)
 
-    print(bold(cyan("\n╔══════════════════════════════════════════════════════╗")))
-    print(bold(cyan("║           CMD Helper — Interactive Guide             ║")))
-    print(bold(cyan("╚══════════════════════════════════════════════════════╝")))
-    print(f"\n  Your alias is {bold(green(alias))}. Type {bold(green(alias + ' <command>'))} to use it.\n")
+    _OS_COLOR = {"linux": green, "windows": blue, "mac": yellow}
+    _OS_BADGE = {"linux": "LNX", "windows": "WIN", "mac": "MAC"}
 
-    # ── RUN ──
-    print(divider)
-    print(bold(yellow("  1. LAUNCH APPS  —  smart run")))
-    print(divider)
-    print(f"  Open any app by name:\n")
-    print(f"    {bold(green(alias + ' run chrome'))}          → opens Chrome")
-    print(f"    {bold(green(alias + ' run vscode'))}          → opens VS Code")
-    print(f"    {bold(green(alias + ' run'))}                 → shows picker, you choose\n")
-    print(f"  Private / incognito mode (for supported browsers):\n")
-    print(f"    {bold(green(alias + ' run private chrome'))}  → Chrome incognito")
-    print(f"    {bold(green(alias + ' run private firefox'))} → Firefox private window\n")
+    def guide_row(os_key, cmd_str, desc):
+        color   = _OS_COLOR.get(os_key, cyan)
+        bdg_txt = _OS_BADGE.get(os_key, "CMD")
+        b       = bold(color(f"[{bdg_txt}]"))
+        c       = bold(green(cmd_str))
+        gap     = max(1, 44 - len(cmd_str))
+        return f"  {b}  {c}{' ' * gap}{dim(desc)}"
 
-    if apps:
-        browser_apps = [a for a in apps if a in private_flags]
-        other_apps   = [a for a in apps if a not in private_flags]
-        print(f"  {cyan('Configured apps:')}  {', '.join(sorted(apps.keys()))}")
-        if browser_apps:
-            print(f"  {cyan('Private support:')}  {', '.join(sorted(browser_apps))}")
+    def print_category(cat_name, cmds, os_key):
+        color   = _OS_COLOR.get(os_key, cyan)
+        w       = 62
+        label   = f"  {cat_name.upper()}"
+        padding = " " * max(0, w - len(label))
+        print()
+        print(bold(color("  ┌" + "─" * w + "┐")))
+        print(bold(color("  │")) + bold(white(label)) + padding + bold(color("│")))
+        print(bold(color("  └" + "─" * w + "┘")))
+        print()
+        for cmd_str, desc in cmds:
+            print(guide_row(os_key, cmd_str, desc))
+        print()
+
+    # ── OS picker ──────────────────────────────────────────────────────────────
+    os_keys   = list(ref.OS_LABELS.keys())
+    os_labels = [ref.OS_LABELS[k] for k in os_keys]
+
+    print(f"  {bold(cyan('Command Reference'))}"
+          f"  {dim('— real terminal commands, organized by category')}\n")
+    print(f"  {bold(cyan('Select OS:'))}")
+    for i, label in enumerate(os_labels, 1):
+        print(f"    {bold(yellow(str(i)))}  {white(label)}")
     print()
 
-    # ── LIST ──
-    print(divider)
-    print(bold(yellow("  2. SYSTEM INFO  —  smart list")))
-    print(divider)
-    print(f"  Show live system information:\n")
-    print(f"    {bold(green(alias + ' list processes'))}      → running processes")
-    print(f"    {bold(green(alias + ' list memory'))}         → RAM usage")
-    print(f"    {bold(green(alias + ' list cpu'))}            → CPU load")
-    print(f"    {bold(green(alias + ' list network'))}        → network ports")
-    print(f"    {bold(green(alias + ' list disks'))}          → disk space")
-    print(f"    {bold(green(alias + ' list ports'))}          → listening ports")
-    print(f"    {bold(green(alias + ' list files'))}          → files in current folder")
-    print(f"    {bold(green(alias + ' list users'))}          → who is logged in")
-    print(f"    {bold(green(alias + ' list'))}                → shows picker, you choose\n")
-    if lists:
-        print(f"  {cyan('All categories:')}  {', '.join(sorted(lists.keys()))}")
-    print()
+    while True:
+        try:
+            raw = input(f"  {bold(cyan(ARROW))} ").strip()
+            idx = int(raw) - 1
+            if 0 <= idx < len(os_keys):
+                sel_os = os_keys[idx]
+                break
+            print(error(f"  {CROSS} Enter 1–{len(os_keys)}."))
+        except ValueError:
+            print(error(f"  {CROSS} Please enter a number."))
+        except KeyboardInterrupt:
+            print(error("\n  Cancelled."))
+            sys.exit(0)
 
-    # ── KILL ──
-    print(divider)
-    print(bold(yellow("  3. KILL PROCESS  —  smart kill")))
-    print(divider)
-    print(f"  Stop any running program by name:\n")
-    print(f"    {bold(green(alias + ' kill chrome'))}         → force-close Chrome")
-    print(f"    {bold(green(alias + ' kill python'))}         → kill Python process")
-    print(f"    {bold(green(alias + ' kill'))}                → prompts you for a name")
-    print(f"\n  {yellow('Tip:')} It asks for confirmation before killing.\n")
+    cmd_map    = ref.ALL[sel_os]
+    categories = list(cmd_map.keys())
+    total_cmds = sum(len(v) for v in cmd_map.values())
 
-    # ── OPEN ──
-    print(divider)
-    print(bold(yellow("  4. OPEN FILE / FOLDER  —  smart open")))
-    print(divider)
-    print(f"  Open any path in your file manager:\n")
-    print(f"    {bold(green(alias + ' open /home/user/docs'))}  → opens folder")
-    print(f"    {bold(green(alias + ' open report.pdf'))}       → opens the file")
-    print(f"    {bold(green(alias + ' open .'))}                → opens current folder")
-    print(f"    {bold(green(alias + ' open'))}                  → prompts you for a path\n")
+    # ── Main loop: pick category → view → repeat ───────────────────────────────
+    while True:
+        color = _OS_COLOR.get(sel_os, cyan)
+        print()
+        print(f"  {bold(color(ref.OS_LABELS[sel_os]))}  "
+              f"{dim(f'— {len(categories)} categories, {total_cmds} commands')}\n")
 
-    # ── FIND ──
-    print(divider)
-    print(bold(yellow("  5. FIND FILES  —  smart find")))
-    print(divider)
-    print(f"  Search for files by name pattern:\n")
-    print(f"    {bold(green(alias + ' find report.pdf'))}      → exact filename")
-    print(f"    {bold(green(alias + ' find .log'))}            → any file ending in .log")
-    print(f"    {bold(green(alias + ' find notes'))}           → any file with 'notes' in name")
-    print(f"    {bold(green(alias + ' find'))}                 → prompts you for a pattern\n")
+        cat_options = categories + ["All Categories"]
+        for i, cat in enumerate(cat_options, 1):
+            if cat == "All Categories":
+                print(f"    {bold(yellow(str(i)))}  {bold(white(cat))}"
+                      f"  {dim(f'({total_cmds} commands, paginated by section)')}")
+            else:
+                cnt = len(cmd_map[cat])
+                print(f"    {bold(yellow(str(i)))}  {white(cat)}  {dim(f'({cnt})')}")
+        print()
 
-    # ── TIPS ──
-    print(divider)
-    print(bold(yellow("  6. TIPS & CUSTOMISATION")))
-    print(divider)
-    print(f"  • Edit {cyan('config.json')} to add your own apps and list categories.")
-    alias_key = '"alias"'
-    print(f"  • Change {cyan(alias_key)} in config.json to rename the command.")
-    print(f"  • Run {bold(green('python3 setup.py'))} once after changing the alias.")
-    print(f"  • Use {bold(green(alias + ' --help'))} for a quick reference at any time.")
-    print(f"  • Works on {cyan('Linux')}, {cyan('Mac')}, and {cyan('Windows')} — same commands everywhere.\n")
+        while True:
+            try:
+                raw = input(f"  {bold(cyan(ARROW))} ").strip()
+                idx = int(raw) - 1
+                if 0 <= idx < len(cat_options):
+                    sel_cat = cat_options[idx]
+                    break
+                print(error(f"  {CROSS} Enter 1–{len(cat_options)}."))
+            except ValueError:
+                print(error(f"  {CROSS} Please enter a number."))
+            except KeyboardInterrupt:
+                print(error("\n  Cancelled."))
+                sys.exit(0)
 
-    # ── ASK AI ──
-    print(divider)
-    print(bold(yellow("  7. ASK AI  —  smart ask")))
-    print(divider)
-    print(f"  Describe what you want in plain English — AI tells you the command:\n")
-    print(f"    {bold(green(alias + ' ask I want to open a file and edit the text'))}")
-    print(f"    {bold(green(alias + ' ask how do I see what is using my RAM'))}")
-    print(f"    {bold(green(alias + ' ask open chrome in private mode'))}")
-    print(f"    {bold(green(alias + ' ask'))}                  → prompts you to type your question\n")
-    print(f"  {yellow('Requires:')} {cyan('OPENROUTER_API_KEY')} env var  (free key at openrouter.ai/keys)\n")
+        if sel_cat == "All Categories":
+            all_cats = list(cmd_map.items())
+            for i, (cat_name, cmds) in enumerate(all_cats):
+                print_category(cat_name, cmds, sel_os)
+                if i < len(all_cats) - 1:
+                    try:
+                        cont = input(
+                            f"  {dim('── Press Enter for next section, q to stop ──')} "
+                        ).strip().lower()
+                        if cont == "q":
+                            break
+                    except KeyboardInterrupt:
+                        break
+        else:
+            print_category(sel_cat, cmd_map[sel_cat], sel_os)
 
-    print(bold(cyan("  ─────────────────────────────────────────────────────")))
-    print(f"  Detected OS: {bold(green(os_name.upper()))}")
-    print(bold(cyan("  ─────────────────────────────────────────────────────\n")))
+        if not ask_yes_no("View another category?"):
+            break
 
+    print(f"\n  {dim('Guide closed.')}  "
+          f"{dim('Type')} {cyan(alias + ' guide')} {dim('to open again.')}\n")
 
-# ---- AI Ask ----
+# ── AI ────────────────────────────────────────────────────────────────────────
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -425,79 +522,77 @@ def save_api_key(key):
 
 def handle_ask(args, config, os_name):
     api_key = os.environ.get("OPENROUTER_API_KEY") or config.get("openrouter_api_key", "")
+
     if not api_key:
-        print(yellow("\n  No OpenRouter API key set."))
+        print(yellow(f"\n  {BULLET} No OpenRouter API key set."))
         print(f"  Get a free key at: {bold(cyan('https://openrouter.ai/keys'))}\n")
         try:
-            api_key = input(bold("  Paste your key here: ")).strip()
+            api_key = input(f"  {bold(cyan('Paste key:'))} ").strip()
         except KeyboardInterrupt:
-            print(error("\nCancelled."))
+            print(error("\n  Cancelled."))
             sys.exit(0)
 
         if not api_key:
-            print(error("  No key entered. Exiting."))
+            print(error(f"  {CROSS} No key entered."))
             sys.exit(1)
 
         try:
-            save = input(bold("  Save this key to config.json for next time? (y/n): ")).strip().lower()
+            save = input(f"  {bold(cyan('Save to config.json?'))} {dim('(y/n)')} ").strip().lower()
         except KeyboardInterrupt:
             save = "n"
 
         if save in ("y", "yes"):
             if save_api_key(api_key):
-                print(green("  Key saved to config.json.\n"))
+                print(green(f"  {CHECK} Key saved.\n"))
             config["openrouter_api_key"] = api_key
         else:
-            print(cyan("  Using key for this session only.\n"))
+            print(dim("  Using for this session only.\n"))
 
     question = " ".join(args).strip() if args else None
     if not question:
         try:
-            question = input(bold("What do you want to do? ")).strip()
+            question = input(f"\n  {bold(yellow(ARROW))} ").strip()
         except KeyboardInterrupt:
-            print(error("\nCancelled."))
+            print(error("\n  Cancelled."))
             sys.exit(0)
 
     if not question:
-        print(error("No question provided."))
+        print(error(f"  {CROSS} No question provided."))
         sys.exit(1)
 
-    alias        = config.get("alias", "smart")
-    model        = config.get("ai_model", "meta-llama/llama-3.1-8b-instruct:free")
+    alias        = config.get("alias", "spider")
+    model        = config.get("ai_model", "google/gemma-4-31b-it:free")
     apps         = sorted(config.get("apps", {}).keys())
     lists        = sorted(config.get("list_commands", {}).keys())
     private_apps = sorted(config.get("private_flags", {}).keys())
 
-    system_prompt = f"""You are a helpful assistant for a command-line tool called "{alias}".
-Your only job is to help the user figure out which "{alias}" command to type to accomplish their goal.
-
-Available commands:
-  {alias} run <app>              — Launch an app (opens detached)
-  {alias} run private <app>     — Launch app in private/incognito mode
-  {alias} run                   — Pick an app interactively from a list
-  {alias} list <category>       — Show live system information
-  {alias} list                  — Pick a category interactively
-  {alias} kill <process>        — Kill a running process by name
-  {alias} open <path>           — Open a file or folder in the default app / file manager
-  {alias} find <name>           — Search for files by name pattern
-  {alias} guide                 — Show the full command guide
-  {alias} --help                — Quick usage reference
-
-Configured apps : {', '.join(apps)}
-Private support : {', '.join(private_apps)}
-List categories : {', '.join(lists)}
-Current OS      : {os_name}
-
-Rules:
-- Reply in 3 parts: (1) one-sentence explanation, (2) the exact command on its own line prefixed with ">", (3) a short optional tip.
-- Keep the total response under 80 words.
-- If the goal cannot be done with the available commands, say so briefly and suggest the closest alternative.
-- Do not make up apps or categories not listed above.
-- Format the exact command like this:  > {alias} run chrome"""
+    system_prompt = (
+        f'You are a helpful assistant for a command-line tool called "{alias}".\n'
+        f'Your only job is to help the user figure out which "{alias}" command to type.\n\n'
+        f"Available commands:\n"
+        f"  {alias} run <app>             — Launch an app\n"
+        f"  {alias} run private <app>    — Launch in private/incognito mode\n"
+        f"  {alias} list <category>      — Show system information\n"
+        f"  {alias} kill <process>       — Kill a running process\n"
+        f"  {alias} open <path>          — Open a file or folder\n"
+        f"  {alias} find <name>          — Search files by name\n"
+        f"  {alias} guide               — Show full command guide\n\n"
+        f"Configured apps : {', '.join(apps)}\n"
+        f"Private support : {', '.join(private_apps)}\n"
+        f"List categories : {', '.join(lists)}\n"
+        f"Current OS      : {os_name}\n\n"
+        f"Rules:\n"
+        f"- Reply in 3 parts: (1) one sentence explanation, "
+        f"(2) exact command on its own line prefixed with >, "
+        f"(3) short optional tip.\n"
+        f"- Keep total response under 80 words.\n"
+        f"- Do not make up apps or categories not listed above.\n"
+        f"- Format the exact command like:  > {alias} run chrome"
+    )
 
     payload = json.dumps({
-        "model": model,
-        "stream": True,
+        "model":      model,
+        "stream":     False,
         "max_tokens": 200,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -516,53 +611,41 @@ Rules:
         },
     )
 
-    print(cyan("\n  Asking AI...\n"))
-    print(f"  {bold('AI Guide:')}\n")
+    print()
+    answer = ""
+    with Spinner("Asking AI"):
+        try:
+            with urllib.request.urlopen(req) as resp:
+                result = json.loads(resp.read())
+            answer = result["choices"][0]["message"]["content"].strip()
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode()
+            print(error(f"\n  {CROSS} OpenRouter error {exc.code}: {body}"))
+            sys.exit(1)
+        except Exception as exc:
+            print(error(f"\n  {CROSS} Request failed: {exc}"))
+            sys.exit(1)
 
-    try:
-        with urllib.request.urlopen(req) as resp:
-            pending = ""
-            for raw in resp:
-                line = raw.decode("utf-8").strip()
-                if not line.startswith("data: "):
-                    continue
-                data = line[6:]
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                    token = chunk["choices"][0]["delta"].get("content", "")
-                except (KeyError, json.JSONDecodeError):
-                    continue
+    # Display response in a box, line by line with a slight fade-in
+    w = 56
+    print(bold(yellow("  ┌" + "─" * w + "┐")))
+    print(bold(yellow("  │")) + bold(white("  AI Guide")) + " " * (w - 10) + bold(yellow("│")))
+    print(bold(yellow("  └" + "─" * w + "┘")))
+    print()
 
-                pending += token
-                # Print complete lines so we can colour ">" lines
-                while "\n" in pending:
-                    line_out, pending = pending.split("\n", 1)
-                    if line_out.strip().startswith(">"):
-                        print(f"  {bold(green(line_out))}")
-                    else:
-                        print(f"  {line_out}")
+    for line in answer.split("\n"):
+        time.sleep(0.06)
+        stripped = line.strip()
+        if stripped.startswith(">"):
+            print(f"  {bold(green(stripped))}")
+        elif stripped:
+            print(f"  {white(line)}")
+        else:
+            print()
 
-            # flush any remaining partial line
-            if pending.strip():
-                if pending.strip().startswith(">"):
-                    print(f"  {bold(green(pending))}")
-                else:
-                    print(f"  {pending}")
+    print()
 
-        print()
-
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode()
-        print(error(f"\n  OpenRouter error {exc.code}: {body}"))
-        sys.exit(1)
-    except Exception as exc:
-        print(error(f"\n  Request failed: {exc}"))
-        sys.exit(1)
-
-
-# ---- Interactive shell ----
+# ── Shell ─────────────────────────────────────────────────────────────────────
 
 def handle_shell(args, config, os_name):
     alias = config.get("alias", "spider")
@@ -577,33 +660,36 @@ def handle_shell(args, config, os_name):
         "ask":   handle_ask,
     }
 
-    print_help(config)
-    print(cyan(f"  Interactive mode — type commands below, or 'exit' to quit.\n"))
+    banner(alias)
+
+    print(f"  {bold(cyan('Interactive Mode'))}  "
+          f"{dim('— type a command, or')} {bold(red('exit'))} {dim('to quit.')}")
+    print(f"  {dim('Tip: prefix with')} {cyan(':')}"
+          f" {dim('to ask AI  e.g.')} {cyan(': open chrome in private')}\n")
+
+    prompt = f"  {bold(cyan(alias))} {bold(cyan(ARROW))} "
 
     while True:
         try:
-            raw = input(bold(f"  {alias}> ")).strip()
+            raw = input(prompt).strip()
         except (KeyboardInterrupt, EOFError):
-            print(green("\n  Goodbye!"))
+            print(f"\n  {green(CHECK)}  {dim('Goodbye!')}\n")
             break
 
         if not raw:
             continue
-
         if raw.lower() in ("exit", "quit", "q", "bye"):
-            print(green("  Goodbye!"))
+            print(f"\n  {green(CHECK)}  {dim('Goodbye!')}\n")
             break
 
-        # support "spider: question" style inside the shell too
         if raw.startswith(":"):
-            rest = raw[1:].strip().split()
             try:
-                handle_ask(rest, config, os_name)
+                handle_ask(raw[1:].strip().split(), config, os_name)
             except SystemExit:
                 pass
             continue
 
-        parts = raw.split()
+        parts   = raw.split()
         command = parts[0].lower()
         rest    = parts[1:]
 
@@ -615,28 +701,29 @@ def handle_shell(args, config, os_name):
         else:
             suggestion = fuzzy_match(command, list(handlers.keys()))
             if suggestion:
-                print(yellow(f"  '{command}' → did you mean '{suggestion}'? Running that..."))
+                print(yellow(f"\n  {BULLET} '{command}' → did you mean '{bold(suggestion)}'? Running that..."))
                 try:
                     handlers[suggestion](rest, config, os_name)
                 except SystemExit:
                     pass
             else:
-                print(error(f"  Unknown: '{command}'  —  try: {', '.join(handlers)} or exit"))
+                avail = list(handlers.keys()) + ["exit"]
+                print(error(f"\n  {CROSS} Unknown: '{command}'"))
+                print(dim(f"  Try: {', '.join(avail)}\n"))
 
-
-# ---- Entry point ----
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    config = load_config()
+    config  = load_config()
     os_name = get_os()
-    args = sys.argv[1:]
+    args    = sys.argv[1:]
 
     if not args or args[0] in ("--help", "-h", "help"):
         print_help(config)
         return
 
     command = args[0].lower()
-    rest = args[1:]
+    rest    = args[1:]
 
     handlers = {
         "run":   handle_run,
@@ -654,11 +741,12 @@ def main():
     else:
         suggestion = fuzzy_match(command, list(handlers.keys()))
         if suggestion:
-            print(yellow(f"  '{command}' → did you mean '{suggestion}'? Running that..."))
+            print(yellow(f"\n  {BULLET} '{command}' → did you mean '{bold(suggestion)}'? Running that..."))
             handlers[suggestion](rest, config, os_name)
         else:
-            print(error(f"Unknown command: '{command}'"))
-            print(f"Run '{config.get('alias', 'spider')} --help' for usage.")
+            al = config.get("alias", "spider")
+            print(error(f"\n  {CROSS} Unknown command: '{command}'"))
+            print(dim(f"  Run '{al} --help' for usage.\n"))
             sys.exit(1)
 
 
