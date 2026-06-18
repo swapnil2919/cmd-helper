@@ -507,46 +507,29 @@ def handle_guide(args, config, os_name):
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-def save_api_key(key):
-    try:
-        with open(CONFIG_PATH, "r") as f:
-            cfg = json.load(f)
-        cfg["openrouter_api_key"] = key
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(cfg, f, indent=2)
-        return True
-    except Exception as exc:
-        print(error(f"  Could not save to config.json: {exc}"))
-        return False
+FREE_MODEL_FALLBACKS = [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "openai/gpt-oss-20b:free",
+    "openai/gpt-oss-120b:free",
+    "qwen/qwen3-coder:free",
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3-nano-30b-a3b:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+]
 
 
 def handle_ask(args, config, os_name):
-    api_key = os.environ.get("OPENROUTER_API_KEY") or config.get("openrouter_api_key", "")
+    print(f"  {dim('Get a free key at')} {cyan('openrouter.ai/keys')}\n")
+    try:
+        api_key = input(f"  {bold(cyan('Paste API key:'))} ").strip()
+    except KeyboardInterrupt:
+        print(error("\n  Cancelled."))
+        sys.exit(0)
 
     if not api_key:
-        print(yellow(f"\n  {BULLET} No OpenRouter API key set."))
-        print(f"  Get a free key at: {bold(cyan('https://openrouter.ai/keys'))}\n")
-        try:
-            api_key = input(f"  {bold(cyan('Paste key:'))} ").strip()
-        except KeyboardInterrupt:
-            print(error("\n  Cancelled."))
-            sys.exit(0)
-
-        if not api_key:
-            print(error(f"  {CROSS} No key entered."))
-            sys.exit(1)
-
-        try:
-            save = input(f"  {bold(cyan('Save to config.json?'))} {dim('(y/n)')} ").strip().lower()
-        except KeyboardInterrupt:
-            save = "n"
-
-        if save in ("y", "yes"):
-            if save_api_key(api_key):
-                print(green(f"  {CHECK} Key saved.\n"))
-            config["openrouter_api_key"] = api_key
-        else:
-            print(dim("  Using for this session only.\n"))
+        print(error(f"  {CROSS} No key entered."))
+        sys.exit(1)
+    print()
 
     question = " ".join(args).strip() if args else None
     if not question:
@@ -561,10 +544,12 @@ def handle_ask(args, config, os_name):
         sys.exit(1)
 
     alias        = config.get("alias", "spider")
-    model        = config.get("ai_model", "google/gemma-4-31b-it:free")
     apps         = sorted(config.get("apps", {}).keys())
     lists        = sorted(config.get("list_commands", {}).keys())
     private_apps = sorted(config.get("private_flags", {}).keys())
+
+    configured_model = config.get("ai_model", FREE_MODEL_FALLBACKS[0])
+    models_to_try = [configured_model] + [m for m in FREE_MODEL_FALLBACKS if m != configured_model]
 
     system_prompt = (
         f'You are a helpful assistant for a command-line tool called "{alias}".\n'
@@ -590,40 +575,50 @@ def handle_ask(args, config, os_name):
         f"- Format the exact command like:  > {alias} run chrome"
     )
 
-    payload = json.dumps({
-        "model":      model,
-        "stream":     False,
-        "max_tokens": 200,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": question},
-        ],
-    }).encode()
-
-    req = urllib.request.Request(
-        OPENROUTER_URL,
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type":  "application/json",
-            "HTTP-Referer":  "https://github.com/swapnil2919/cmd-helper",
-            "X-Title":       "CMD Helper",
-        },
-    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user",   "content": question},
+    ]
 
     print()
     answer = ""
     with Spinner("Asking AI"):
-        try:
-            with urllib.request.urlopen(req) as resp:
-                result = json.loads(resp.read())
-            answer = result["choices"][0]["message"]["content"].strip()
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode()
-            print(error(f"\n  {CROSS} OpenRouter error {exc.code}: {body}"))
-            sys.exit(1)
-        except Exception as exc:
-            print(error(f"\n  {CROSS} Request failed: {exc}"))
+        last_err = ""
+        for model in models_to_try:
+            payload = json.dumps({
+                "model":      model,
+                "stream":     False,
+                "max_tokens": 200,
+                "messages":   messages,
+            }).encode()
+
+            req = urllib.request.Request(
+                OPENROUTER_URL,
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type":  "application/json",
+                    "HTTP-Referer":  "https://github.com/swapnil2919/cmd-helper",
+                    "X-Title":       "CMD Helper",
+                },
+            )
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    result = json.loads(resp.read())
+                answer = result["choices"][0]["message"]["content"].strip()
+                break
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode()
+                if exc.code in (404, 429):
+                    last_err = f"{exc.code} on {model}"
+                    continue
+                print(error(f"\n  {CROSS} OpenRouter error {exc.code}: {body}"))
+                sys.exit(1)
+            except Exception as exc:
+                print(error(f"\n  {CROSS} Request failed: {exc}"))
+                sys.exit(1)
+        else:
+            print(error(f"\n  {CROSS} All free models unavailable ({last_err}). Try later."))
             sys.exit(1)
 
     # Display response in a box, line by line with a slight fade-in

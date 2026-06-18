@@ -1,7 +1,7 @@
 {
   "alias": "spider",
   "openrouter_api_key": "",
-  "ai_model": "google/gemma-4-31b-it:free",
+  "ai_model": "meta-llama/llama-3.3-70b-instruct:free",
   "apps": {
     "chrome": {
       "linux": [
