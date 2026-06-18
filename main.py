@@ -384,7 +384,8 @@ def handle_guide(args, config, os_name):
     print(bold(yellow("  6. TIPS & CUSTOMISATION")))
     print(divider)
     print(f"  • Edit {cyan('config.json')} to add your own apps and list categories.")
-    print(f"  • Change {cyan('\"alias\"')} in config.json to rename the command.")
+    alias_key = '"alias"'
+    print(f"  • Change {cyan(alias_key)} in config.json to rename the command.")
     print(f"  • Run {bold(green('python3 setup.py'))} once after changing the alias.")
     print(f"  • Use {bold(green(alias + ' --help'))} for a quick reference at any time.")
     print(f"  • Works on {cyan('Linux')}, {cyan('Mac')}, and {cyan('Windows')} — same commands everywhere.\n")
