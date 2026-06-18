@@ -23,6 +23,10 @@ def load_config():
     with open(CONFIG_PATH, "r") as f:
         return json.load(f)
 
+def save_config(config):
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(config, f, indent=2)
+
 def get_os():
     s = platform.system().lower()
     if s == "darwin":  return "mac"
@@ -352,6 +356,221 @@ def handle_find(args, config, os_name):
         run_inline(["find", ".", "-iname", f"*{query}*", "-not", "-path", "*/.git/*"])
     print()
 
+# ── Dev tools audit ───────────────────────────────────────────────────────────
+
+DEV_TOOLS = [
+    ("Core Tools", [
+        ("git",    ["--version"],  "Version control — essential for every developer"),
+        ("curl",   ["--version"],  "HTTP client — API testing and downloads"),
+        ("wget",   ["--version"],  "File downloader"),
+        ("ssh",    ["-V"],         "Secure shell — remote server access"),
+        ("make",   ["--version"],  "Build automation"),
+        ("vim",    ["--version"],  "Terminal text editor"),
+        ("nano",   ["--version"],  "Beginner-friendly terminal editor"),
+    ]),
+    ("Languages", [
+        ("python3", ["--version"], "Python 3 — scripting, automation, data"),
+        ("python",  ["--version"], "Python (may be 2 or 3)"),
+        ("node",    ["--version"], "Node.js — JavaScript runtime"),
+        ("npm",     ["--version"], "Node package manager"),
+        ("go",      ["version"],   "Go language"),
+        ("cargo",   ["--version"], "Rust (via cargo)"),
+        ("ruby",    ["--version"], "Ruby language"),
+        ("java",    ["--version"], "Java runtime"),
+        ("php",     ["--version"], "PHP runtime"),
+    ]),
+    ("Containers", [
+        ("docker",         ["--version"],           "Container runtime"),
+        ("docker-compose", ["--version"],           "Multi-container orchestration"),
+        ("kubectl",        ["version", "--client"], "Kubernetes CLI"),
+    ]),
+    ("Useful Utilities", [
+        ("htop",   ["--version"], "Better process viewer than top"),
+        ("tree",   ["--version"], "Directory tree display"),
+        ("jq",     ["--version"], "JSON processor for terminal"),
+        ("tmux",   ["-V"],        "Terminal multiplexer — multiple panes"),
+        ("fzf",    ["--version"], "Fuzzy finder for anything"),
+        ("bat",    ["--version"], "Better cat with syntax highlighting"),
+        ("rg",     ["--version"], "ripgrep — fast code search"),
+    ]),
+]
+
+
+def handle_check(args, config, os_name):
+    alias = config.get("alias", "spider")
+
+    banner(alias)
+    print(f"  {bold(cyan('Dev Environment Audit'))}  {dim('— checking installed tools')}\n")
+
+    _CAT_COLORS = {
+        "Core Tools":       cyan,
+        "Languages":        green,
+        "Containers":       blue,
+        "Useful Utilities": magenta,
+    }
+
+    total = found = 0
+
+    for cat_name, tools in DEV_TOOLS:
+        color_fn = _CAT_COLORS.get(cat_name, white)
+        w        = 60
+        label    = f"  {cat_name}"
+        print(bold(color_fn(f"  ┌{'─' * w}┐")))
+        print(bold(color_fn(f"  │")) + bold(white(label)) + " " * (w - len(label)) + bold(color_fn(f"│")))
+        print(bold(color_fn(f"  └{'─' * w}┘")))
+        print()
+
+        for tool, flags, desc in tools:
+            total += 1
+            name_col = (tool + ":").ljust(16)
+            try:
+                res = subprocess.run(
+                    [tool] + flags,
+                    capture_output=True, text=True, timeout=3
+                )
+                raw = (res.stdout + res.stderr).strip().split("\n")[0]
+                version = raw[:52] if raw else "installed"
+                print(f"  {bold(green(CHECK))}  {bold(white(name_col))} {dim(version)}")
+                found += 1
+            except (FileNotFoundError, PermissionError):
+                print(f"  {bold(red(CROSS))}  {dim(name_col)} {dim(desc)}")
+            except subprocess.TimeoutExpired:
+                print(f"  {yellow('?')}   {yellow(name_col)} {dim('timed out')}")
+            except Exception:
+                print(f"  {bold(red(CROSS))}  {dim(name_col)} {dim(desc)}")
+
+        print()
+
+    missing = total - found
+    status  = (bold(green(f"{found} installed")) + "  " +
+               (bold(red(f"{missing} missing")) if missing else dim("0 missing")))
+    print(f"  {bold(cyan('Result:'))}  {status}\n")
+
+    if missing:
+        if os_name == "linux":
+            print(f"  {dim('Install missing:')}  {cyan('sudo apt install <tool>')}  "
+                  f"{dim('or')}  {cyan('pip install <tool>')}\n")
+        elif os_name == "mac":
+            print(f"  {dim('Install missing:')}  {cyan('brew install <tool>')}\n")
+        else:
+            print(f"  {dim('Install missing:')}  {cyan('winget install <tool>')}  "
+                  f"{dim('or search')}  {cyan('chocolatey.org')}\n")
+
+
+# ── Learn ─────────────────────────────────────────────────────────────────────
+
+def handle_learn(args, config, os_name):
+    sys.path.insert(0, SCRIPT_DIR)
+    import cmd_reference as ref
+
+    alias = config.get("alias", "spider")
+    paths = ref.LEARN_PATHS
+
+    banner(alias)
+    print(f"  {bold(cyan('Learning Paths'))}  {dim('— structured terminal skills for developers')}\n")
+
+    path_keys = list(paths.keys())
+    for i, key in enumerate(path_keys, 1):
+        p        = paths[key]
+        n        = len(p["lessons"])
+        lesson_s = "lesson" if n == 1 else "lessons"
+        print(f"    {bold(yellow(str(i)))}  {bold(white(key))}  "
+              f"{dim(f'({n} {lesson_s})')}  {dim(p['desc'])}")
+    print()
+
+    while True:
+        try:
+            raw = input(f"  {bold(cyan(ARROW))} ").strip()
+            idx = int(raw) - 1
+            if 0 <= idx < len(path_keys):
+                sel_path = path_keys[idx]
+                break
+            print(error(f"  {CROSS} Enter 1–{len(path_keys)}."))
+        except ValueError:
+            print(error(f"  {CROSS} Please enter a number."))
+        except KeyboardInterrupt:
+            print(error("\n  Cancelled."))
+            sys.exit(0)
+
+    path_data = paths[sel_path]
+    lessons   = path_data["lessons"]
+
+    def print_lesson(lesson):
+        w     = 60
+        label = f"  {lesson['title']}"
+        print()
+        print(bold(yellow(f"  ┌{'─' * w}┐")))
+        print(bold(yellow(f"  │")) + bold(white(label)) + " " * (w - len(label)) + bold(yellow(f"│")))
+        print(bold(yellow(f"  └{'─' * w}┘")))
+        print()
+        print(f"  {bold(cyan('Concept'))}")
+        for line in lesson["concept"]:
+            print(f"    {white(line)}")
+        print()
+        print(f"  {bold(cyan('Commands'))}")
+        for cmd_str, desc in lesson["commands"]:
+            gap = max(1, 42 - len(cmd_str))
+            print(f"    {bold(green(cmd_str))}{' ' * gap}{dim(desc)}")
+        print()
+        print(f"  {bold(yellow('Pro Tip'))}  {white(lesson['tip'])}")
+        print()
+        print(f"  {bold(magenta('Try It'))}  {white(lesson['challenge'])}")
+        print()
+
+    while True:
+        w     = 60
+        label = f"  {sel_path}"
+        print()
+        print(bold(cyan(f"  ┌{'─' * w}┐")))
+        print(bold(cyan(f"  │")) + bold(white(label)) + " " * (w - len(label)) + bold(cyan(f"│")))
+        print(bold(cyan(f"  └{'─' * w}┘")))
+        print()
+
+        lesson_options = [l["title"] for l in lessons] + ["All Lessons"]
+        for i, opt in enumerate(lesson_options, 1):
+            if opt == "All Lessons":
+                print(f"    {bold(yellow(str(i)))}  {bold(white(opt))}")
+            else:
+                print(f"    {bold(yellow(str(i)))}  {white(opt)}")
+        print()
+
+        while True:
+            try:
+                raw = input(f"  {bold(cyan(ARROW))} ").strip()
+                idx = int(raw) - 1
+                if 0 <= idx < len(lesson_options):
+                    sel = lesson_options[idx]
+                    break
+                print(error(f"  {CROSS} Enter 1–{len(lesson_options)}."))
+            except ValueError:
+                print(error(f"  {CROSS} Please enter a number."))
+            except KeyboardInterrupt:
+                print(error("\n  Cancelled."))
+                sys.exit(0)
+
+        if sel == "All Lessons":
+            for i, lesson in enumerate(lessons):
+                print_lesson(lesson)
+                if i < len(lessons) - 1:
+                    try:
+                        cont = input(
+                            f"  {dim('── Enter for next lesson, q to stop ──')} "
+                        ).strip().lower()
+                        if cont == "q":
+                            break
+                    except KeyboardInterrupt:
+                        break
+        else:
+            lesson = next(l for l in lessons if l["title"] == sel)
+            print_lesson(lesson)
+
+        if not ask_yes_no("View another lesson?"):
+            break
+
+    print(f"\n  {dim('Session closed.')}  "
+          f"{dim('Type')} {cyan(alias + ' learn')} {dim('to open again.')}\n")
+
+
 # ── Help ──────────────────────────────────────────────────────────────────────
 
 def print_help(config):
@@ -367,14 +586,15 @@ def print_help(config):
         ("RUN",   f"{alias} run <app>",             "Launch an app"),
         ("RUN",   f"{alias} run private <app>",     "Launch in private/incognito"),
         ("LIST",  f"{alias} list <category>",       "Show system info"),
-        ("LIST",  f"{alias} list",                  "Pick category interactively"),
         ("KILL",  f"{alias} kill <process>",        "Kill a running process"),
         ("OPEN",  f"{alias} open <path>",           "Open a file or folder"),
         ("FIND",  f"{alias} find <name>",           "Search files by name"),
-        ("AI",    f"{alias} ask <question>",        "Ask AI for command help"),
-        ("AI",    f"{alias}: <question>",           "AI shortcut (no 'ask' needed)"),
-        ("SHELL", f"{alias} guide",                 "Full command guide"),
-        ("SHELL", f"{alias} shell",                 "Interactive mode"),
+        ("AI",    f"{alias} ask <question>",        "Ask AI — any terminal/dev question"),
+        ("AI",    f"{alias}: <question>",           "AI shortcut inside shell mode"),
+        ("SHELL", f"{alias} check",                 "Audit installed dev tools"),
+        ("SHELL", f"{alias} learn",                 "Interactive learning paths"),
+        ("SHELL", f"{alias} guide",                 "Full command reference"),
+        ("SHELL", f"{alias} shell",                 "Interactive terminal mode"),
     ]
 
     for bdg, cmd, desc in rows:
@@ -519,16 +739,25 @@ FREE_MODEL_FALLBACKS = [
 
 
 def handle_ask(args, config, os_name):
-    print(f"  {dim('Get a free key at')} {cyan('openrouter.ai/keys')}\n")
-    try:
-        api_key = input(f"  {bold(cyan('Paste API key:'))} ").strip()
-    except KeyboardInterrupt:
-        print(error("\n  Cancelled."))
-        sys.exit(0)
+    alias        = config.get("alias", "spider")
+    apps         = sorted(config.get("apps", {}).keys())
+    lists        = sorted(config.get("list_commands", {}).keys())
+
+    # ── API key: use saved key or prompt and offer to save ────────────────────
+    api_key        = config.get("openrouter_api_key", "").strip()
+    prompted_key   = False
 
     if not api_key:
-        print(error(f"  {CROSS} No key entered."))
-        sys.exit(1)
+        print(f"  {dim('Get a free key at')} {cyan('openrouter.ai/keys')}\n")
+        try:
+            api_key = input(f"  {bold(cyan('Paste API key:'))} ").strip()
+        except KeyboardInterrupt:
+            print(error("\n  Cancelled."))
+            sys.exit(0)
+        if not api_key:
+            print(error(f"  {CROSS} No key entered."))
+            sys.exit(1)
+        prompted_key = True
     print()
 
     question = " ".join(args).strip() if args else None
@@ -543,36 +772,29 @@ def handle_ask(args, config, os_name):
         print(error(f"  {CROSS} No question provided."))
         sys.exit(1)
 
-    alias        = config.get("alias", "spider")
-    apps         = sorted(config.get("apps", {}).keys())
-    lists        = sorted(config.get("list_commands", {}).keys())
-    private_apps = sorted(config.get("private_flags", {}).keys())
-
     configured_model = config.get("ai_model", FREE_MODEL_FALLBACKS[0])
-    models_to_try = [configured_model] + [m for m in FREE_MODEL_FALLBACKS if m != configured_model]
+    models_to_try    = [configured_model] + [m for m in FREE_MODEL_FALLBACKS if m != configured_model]
 
     system_prompt = (
-        f'You are a helpful assistant for a command-line tool called "{alias}".\n'
-        f'Your only job is to help the user figure out which "{alias}" command to type.\n\n'
-        f"Available commands:\n"
-        f"  {alias} run <app>             — Launch an app\n"
-        f"  {alias} run private <app>    — Launch in private/incognito mode\n"
-        f"  {alias} list <category>      — Show system information\n"
-        f"  {alias} kill <process>       — Kill a running process\n"
-        f"  {alias} open <path>          — Open a file or folder\n"
-        f"  {alias} find <name>          — Search files by name\n"
-        f"  {alias} guide               — Show full command guide\n\n"
-        f"Configured apps : {', '.join(apps)}\n"
-        f"Private support : {', '.join(private_apps)}\n"
-        f"List categories : {', '.join(lists)}\n"
-        f"Current OS      : {os_name}\n\n"
-        f"Rules:\n"
-        f"- Reply in 3 parts: (1) one sentence explanation, "
-        f"(2) exact command on its own line prefixed with >, "
-        f"(3) short optional tip.\n"
-        f"- Keep total response under 80 words.\n"
-        f"- Do not make up apps or categories not listed above.\n"
-        f"- Format the exact command like:  > {alias} run chrome"
+        f'You are a professional terminal and developer workflow coach.\n'
+        f'Help the user work like a professional developer in the terminal.\n'
+        f'Current OS: {os_name}\n\n'
+        f'The user also has a CLI helper called "{alias}" with commands:\n'
+        f'  {alias} run <app>    — Launch an app  (apps: {", ".join(apps)})\n'
+        f'  {alias} list <cat>   — System info     (cats: {", ".join(lists)})\n'
+        f'  {alias} kill <proc>  — Kill a process\n'
+        f'  {alias} check        — Audit installed dev tools\n'
+        f'  {alias} learn        — Interactive learning paths\n'
+        f'  {alias} guide        — Full command reference\n'
+        f'  {alias} shell        — Interactive terminal mode\n\n'
+        f'Answer rules:\n'
+        f'- Answer ANY terminal, git, docker, SSH, or developer tool question\n'
+        f'- Suggest a {alias} command only when directly relevant\n'
+        f'- Reply in 3 parts: (1) one sentence explanation, '
+        f'(2) exact terminal command on its own line starting with >, '
+        f'(3) one short pro tip\n'
+        f'- Keep total response under 100 words\n'
+        f'- Always give real, runnable commands'
     )
 
     messages = [
@@ -640,6 +862,45 @@ def handle_ask(args, config, os_name):
 
     print()
 
+    # ── "Run it?" — extract the > command and offer one-key execution ─────────
+    if answer:
+        suggestion = None
+        for part in answer.split("\n"):
+            s = part.strip()
+            if s.startswith(">"):
+                suggestion = s[1:].strip()
+                break
+
+        if suggestion:
+            print(f"  {bold(cyan('Run it?'))}  "
+                  f"{bold(green(suggestion))}  "
+                  f"{dim('(Enter = run  ·  n = skip)')}")
+            try:
+                confirm = input(f"  {bold(cyan(ARROW))} ").strip().lower()
+                if confirm in ("", "y", "yes"):
+                    print()
+                    try:
+                        res = subprocess.run(suggestion, shell=True)
+                        if res.returncode != 0:
+                            print(dim(f"\n  (exit {res.returncode})"))
+                    except Exception as exc:
+                        print(error(f"  {CROSS} {exc}"))
+                    print()
+            except KeyboardInterrupt:
+                print(error("\n  Cancelled.\n"))
+
+    # ── Save key (once, first time only) ─────────────────────────────────────
+    if prompted_key and answer:
+        try:
+            if ask_yes_no("Save API key to config so you don't retype it?"):
+                config["openrouter_api_key"] = api_key
+                save_config(config)
+                print(f"\n  {green(CHECK)}  Key saved to config.json\n")
+        except SystemExit:
+            pass
+
+    return answer
+
 # ── Shell ─────────────────────────────────────────────────────────────────────
 
 def handle_shell(args, config, os_name):
@@ -651,6 +912,8 @@ def handle_shell(args, config, os_name):
         "kill":  handle_kill,
         "open":  handle_open,
         "find":  handle_find,
+        "check": handle_check,
+        "learn": handle_learn,
         "guide": handle_guide,
         "ask":   handle_ask,
     }
@@ -682,7 +945,7 @@ def handle_shell(args, config, os_name):
             print(f"\n  {green(CHECK)}  {dim('Goodbye!')}\n")
             break
 
-        # AI shortcut
+        # AI shortcut — ask AI, suggest command, offer one-key run
         if raw.startswith(":"):
             try:
                 handle_ask(raw[1:].strip().split(), config, os_name)
@@ -745,6 +1008,8 @@ def main():
         "kill":  handle_kill,
         "open":  handle_open,
         "find":  handle_find,
+        "check": handle_check,
+        "learn": handle_learn,
         "guide": handle_guide,
         "ask":   handle_ask,
         "shell": handle_shell,
